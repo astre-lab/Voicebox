@@ -1,3 +1,117 @@
+name: Build Linux
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  # ============================================================
+  # JOB 1: Standard Linux AppImage (CPU-only, matches Release.yml)
+  # ============================================================
+  build-linux-appimage:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            llvm-dev \
+            libasound2-dev
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install CPU-only PyTorch
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r backend/requirements.txt
+          pip install --no-deps chatterbox-tts
+          pip install --no-deps hume-tada
+
+      - name: Build Python server
+        run: |
+          chmod +x scripts/build-server.sh
+          ./scripts/build-server.sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./tauri/src-tauri -> target"
+
+      - name: Install JS dependencies
+        run: bun install
+
+      - name: Build Tauri app
+        timeout-minutes: 30
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CARGO_TERM_VERBOSE: "true"
+          RUST_BACKTRACE: "1"
+        run: |
+          cd tauri
+          bun run tauri build
+
+      - name: Upload AppImage and .deb
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+            tauri/src-tauri/target/release/bundle/deb/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicebox-linux-appimage
+          path: |
+            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+            tauri/src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 7
+
+  # ============================================================
+  # JOB 2: Linux CUDA Backend (for manual deployment)
+  # Mirrors build-cuda-windows but publishes separately.
+  # Users deploy this manually; it is NOT auto-downloaded.
+  # ============================================================
   build-cuda-linux:
     runs-on: ubuntu-22.04
     permissions:
@@ -35,6 +149,10 @@
           pip install torch --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
           pip install torchaudio --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
 
+      - name: Verify CUDA support in torch
+        run: |
+          python -c "import torch; print(f'CUDA available in build: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
+
       - name: Build CUDA server binary (onedir)
         shell: bash
         working-directory: backend
@@ -48,19 +166,26 @@
           python scripts/package_cuda.py \
             backend/dist/voicebox-server-cuda/ \
             --output release-assets/ \
-            --cuda-libs-version cu128-v1 \
+            --cuda-libs-version cu128-linux-v1 \
             --torch-compat ">=2.7.0,<2.11.0"
 
-      - name: Upload archives to GitHub Release
+      - name: Upload CUDA archives to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release-assets/voicebox-server-cuda.tar.gz
             release-assets/voicebox-server-cuda.tar.gz.sha256
-            release-assets/cuda-libs-cu128-v1.tar.gz
-            release-assets/cuda-libs-cu128-v1.tar.gz.sha256
+            release-assets/cuda-libs-cu128-linux-v1.tar.gz
+            release-assets/cuda-libs-cu128-linux-v1.tar.gz.sha256
             release-assets/cuda-libs.json
           draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload onedir as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicebox-server-cuda-linux
+          path: backend/dist/voicebox-server-cuda/
+          retention-days: 7
