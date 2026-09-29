@@ -30,19 +30,26 @@ jobs:
           pip install --no-deps chatterbox-tts
           pip install --no-deps hume-tada
 
-      - name: Install CUDA PyTorch
+            - name: Install CUDA PyTorch
+              run: |
+              pip install \
+            torch==2.10.0 \
+            torchaudio==2.10.0 \
+            --index-url https://download.pytorch.org/whl/cu128
+            
+      - name: Verify PyTorch CUDA build
         run: |
-          pip install \
-            torch \
-            --index-url https://download.pytorch.org/whl/cu128 \
-            --force-reinstall \
-            --no-deps
+          python - <<'PY'
+          import torch
+          import torchaudio
 
-          pip install \
-            torchaudio \
-            --index-url https://download.pytorch.org/whl/cu128 \
-            --force-reinstall \
-            --no-deps
+          print("PyTorch:", torch.__version__)
+          print("TorchAudio:", torchaudio.__version__)
+          print("CUDA build:", torch.version.cuda)
+
+          assert torch.version.cuda is not None
+          assert torch.version.cuda.startswith("12.8")
+          PY
 
       - name: Verify PyTorch CUDA build
         run: |
