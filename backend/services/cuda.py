@@ -31,11 +31,20 @@ GITHUB_RELEASES_URL = "https://github.com/jamiepine/voicebox/releases/download"
 
 PROGRESS_KEY = "cuda-backend"
 
-CUDA_DOWNLOAD_UNSUPPORTED_REASON = "Downloadable CUDA backend releases are currently only published for Windows."
+CUDA_DOWNLOAD_UNSUPPORTED_REASON = (
+    "Downloadable CUDA backend releases are not published for this platform."
+)
 
-# The current expected CUDA libs version.  Bump this when we change the
-# CUDA toolkit version or torch's CUDA dependency changes (e.g. cu126 -> cu128).
-CUDA_LIBS_VERSION = "cu128-v1"
+# The current expected CUDA libs version.
+#
+# Windows and Linux use separate archives because their native CUDA
+# libraries are platform-specific.
+if sys.platform == "win32":
+    CUDA_LIBS_VERSION = "cu128-v1"
+elif sys.platform.startswith("linux"):
+    CUDA_LIBS_VERSION = "cu128-linux-v1"
+else:
+    CUDA_LIBS_VERSION = "cu128-v1"
 
 # Prevents concurrent download_cuda_binary() calls from racing on the same
 # temp file.  The auto-update background task and the manual HTTP endpoint
