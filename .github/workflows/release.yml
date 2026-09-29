@@ -340,7 +340,195 @@ jobs:
           name: voicebox-server-cuda-windows
           path: backend/dist/voicebox-server-cuda/
           retention-days: 7
+    build-cuda-linux:
+    name: Build CUDA Server (Linux)
+    runs-on: ubuntu-24.04
 
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Linux CUDA + PyTorch + PyInstaller can consume a lot of disk.
+      # Reuse the same disk cleanup strategy already used elsewhere
+      # in this release workflow.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            llvm-dev \
+            libasound2-dev \
+            sox
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install pyinstaller
+
+      - name: Install backend requirements
+        run: |
+          python -m pip install -r backend/requirements.txt
+
+      - name: Install Chatterbox TTS
+        run: |
+          python -m pip install chatterbox-tts --no-deps
+
+      - name: Install Hume TADA
+        run: |
+          python -m pip install hume-tada --no-deps
+
+      # IMPORTANT:
+      #
+      # Do NOT use --no-deps here.
+      #
+      # The earlier Linux build failed with missing:
+      #
+      #   libcudart.so.12
+      #   libcublasLt.so.*
+      #
+      # because the CUDA dependency wheels were not installed.
+      #
+      # Pinning both packages to 2.10.0 also keeps them inside the
+      # package_cuda.py compatibility range:
+      #
+      #   >=2.7.0,<2.11.0
+      #
+      - name: Install CUDA PyTorch
+        run: |
+          python -m pip install \
+            torch==2.10.0 \
+            torchaudio==2.10.0 \
+            --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Verify CUDA PyTorch
+        run: |
+          python - <<'PY'
+          import torch
+          import torchaudio
+
+          print("PyTorch:", torch.__version__)
+          print("Torch CUDA:", torch.version.cuda)
+          print("Torchaudio:", torchaudio.__version__)
+
+          if torch.version.cuda is None:
+              raise RuntimeError(
+                  "PyTorch does not report a CUDA build"
+              )
+
+          if not torch.__version__.startswith("2.10."):
+              raise RuntimeError(
+                  f"Unexpected PyTorch version: {torch.__version__}"
+              )
+
+          print("CUDA PyTorch installation verified.")
+          PY
+
+      # GitHub-hosted Linux runners do not provide an NVIDIA GPU.
+      #
+      # Therefore we intentionally DO NOT require:
+      #
+      #   torch.cuda.is_available() == True
+      #
+      # The purpose of this job is to build the CUDA binary, not execute
+      # CUDA kernels on the runner.
+      - name: Build CUDA server
+        working-directory: backend
+        env:
+          TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;12.0+PTX"
+        run: |
+          python build_binary.py --cuda
+
+      - name: Verify CUDA binary
+        run: |
+          test -x backend/dist/voicebox-server-cuda/voicebox-server-cuda
+
+          file backend/dist/voicebox-server-cuda/voicebox-server-cuda
+
+          echo
+          echo "Largest files:"
+          find backend/dist/voicebox-server-cuda \
+            -type f \
+            -printf '%s %p\n' \
+            | sort -nr \
+            | head -50
+
+          echo
+          echo "Linux shared libraries:"
+          find backend/dist/voicebox-server-cuda \
+            -type f \
+            \( \
+              -name '*.so' \
+              -o -name '*.so.*' \
+            \) \
+            | sort \
+            | head -200
+
+      - name: Package CUDA server
+        run: |
+          python scripts/package_cuda.py \
+            backend/dist/voicebox-server-cuda/ \
+            --output release-assets/ \
+            --platform linux \
+            --cuda-libs-version cu128-linux-v1 \
+            --torch-compat ">=2.7.0,<2.11.0" \
+            --gzip-level 1
+
+      - name: List release assets
+        run: |
+          echo "Release assets:"
+          ls -lah release-assets/
+
+          echo
+          echo "Checksums:"
+          cat release-assets/*.sha256
+
+          echo
+          echo "Linux CUDA manifest:"
+          cat release-assets/cuda-libs-linux.json
+
+      - name: Upload CUDA Linux release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            release-assets/voicebox-server-cuda-linux.tar.gz
+            release-assets/voicebox-server-cuda-linux.tar.gz.sha256
+            release-assets/cuda-libs-cu128-linux-v1.tar.gz
+            release-assets/cuda-libs-cu128-linux-v1.tar.gz.sha256
+            release-assets/cuda-libs-linux.json
+
+      - name: Upload CUDA Linux onedir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicebox-server-cuda-linux
+          path: backend/dist/voicebox-server-cuda/
+          
   build-rocm-windows:
     runs-on: windows-latest
     permissions:
