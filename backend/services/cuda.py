@@ -73,10 +73,37 @@ def get_cuda_exe_name() -> str:
         return "voicebox-server-cuda.exe"
     return "voicebox-server-cuda"
 
+def get_cuda_release_assets() -> tuple[str, str]:
+    """
+    Return the platform-specific server and CUDA library archive names.
+
+    Windows:
+        voicebox-server-cuda.tar.gz
+        cuda-libs-cu128-v1.tar.gz
+
+    Linux:
+        voicebox-server-cuda-linux.tar.gz
+        cuda-libs-cu128-linux-v1.tar.gz
+    """
+    if sys.platform == "win32":
+        return (
+            "voicebox-server-cuda.tar.gz",
+            "cuda-libs-cu128-v1.tar.gz",
+        )
+
+    if sys.platform.startswith("linux"):
+        return (
+            "voicebox-server-cuda-linux.tar.gz",
+            "cuda-libs-cu128-linux-v1.tar.gz",
+        )
+
+    raise RuntimeError(
+        f"Unsupported CUDA release platform: {sys.platform}"
+    )
 
 def is_cuda_download_supported() -> bool:
     """Return whether this platform has a matching CUDA release asset."""
-    return sys.platform == "win32"
+    return sys.platform in ("win32", "linux")
 
 
 def get_cuda_download_unsupported_reason() -> str | None:
@@ -321,8 +348,7 @@ async def _download_cuda_binary_locked(version: Optional[str] = None):
     )
 
     base_url = f"{GITHUB_RELEASES_URL}/{version}"
-    server_archive = "voicebox-server-cuda.tar.gz"
-    libs_archive = f"cuda-libs-{CUDA_LIBS_VERSION}.tar.gz"
+    server_archive, libs_archive = get_cuda_release_assets()
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
