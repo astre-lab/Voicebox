@@ -1,0 +1,60 @@
+name: Build Linux AppImage
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri/package-lock.json
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: tauri
+        run: npm ci
+
+      - name: Build Tauri AppImage
+        working-directory: tauri
+        run: npm run tauri build
+
+      - name: Find AppImage
+        run: |
+          find tauri/src-tauri/target/release/bundle -type f \
+            \( -name "*.AppImage" -o -name "*.AppImage.tar.gz" \) \
+            -print
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicebox-linux-appimage
+          path: |
+            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
