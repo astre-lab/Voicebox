@@ -1,4 +1,4 @@
-```yaml
+
 name: Build Linux AppImage
 
 on:
@@ -82,4 +82,4 @@ jobs:
           path: tauri/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
-```
+
