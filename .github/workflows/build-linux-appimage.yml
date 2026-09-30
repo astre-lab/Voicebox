@@ -40,8 +40,14 @@ jobs:
       - name: Install dependencies
         run: just setup
 
-      - name: Build Voicebox
-        run: just build
+      - name: Build Voicebox server
+        run: |
+          chmod +x scripts/build-server.sh
+          ./scripts/build-server.sh
+
+      - name: Build AppImage only
+        working-directory: tauri
+        run: bun run tauri build --bundles appimage
 
       - name: Show generated bundles
         run: |
