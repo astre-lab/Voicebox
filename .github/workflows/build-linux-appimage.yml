@@ -5,48 +5,52 @@ on:
 
 jobs:
   build-linux:
+    name: Build Voicebox Linux AppImage
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev \
-            libayatana-appindicator3-dev \
+            libappindicator3-dev \
             librsvg2-dev \
-            libxdo-dev \
-            patchelf
+            patchelf \
+            llvm-dev \
+            libasound2-dev
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: bun install
 
-      - name: Install frontend dependencies
+      - name: Show Bun version
+        run: bun --version
+
+      - name: Show Tauri version
         working-directory: tauri
-        run: npm install
+        run: bun run tauri --version
 
       - name: Build Tauri AppImage
         working-directory: tauri
-        run: npm run tauri build
+        run: bun run tauri build
 
       - name: Show generated bundles
         run: |
-          find tauri/src-tauri/target/release/bundle -type f -print
+          echo "=== Generated bundles ==="
+          find tauri/src-tauri/target/release/bundle \
+            -type f \
+            -print
 
-      - name: Upload AppImage
+      - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
         with:
           name: voicebox-linux-appimage
