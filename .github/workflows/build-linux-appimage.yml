@@ -1,59 +1,101 @@
 name: Build Linux AppImage
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 jobs:
-  build-linux:
-    name: Build Voicebox Linux AppImage
-    runs-on: ubuntu-24.04
+build-linux:
+name: Build Voicebox Linux AppImage
+runs-on: ubuntu-24.04
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+```
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+  - name: Install Linux dependencies
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y \
+        libwebkit2gtk-4.1-dev \
+        libappindicator3-dev \
+        librsvg2-dev \
+        patchelf \
+        llvm-dev \
+        libasound2-dev
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+  - name: Setup Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.12"
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            llvm-dev \
-            libasound2-dev
+  - name: Install CPU PyTorch
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install \
+        torch \
+        torchaudio \
+        --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install dependencies
-        run: bun install
+  - name: Install backend dependencies
+    run: |
+      python -m pip install pyinstaller
+      python -m pip install -r backend/requirements.txt
+      python -m pip install --no-deps chatterbox-tts
+      python -m pip install --no-deps hume-tada
 
-      - name: Show Bun version
-        run: bun --version
+  - name: Build Linux server
+    run: |
+      chmod +x scripts/build-server.sh
+      ./scripts/build-server.sh
 
-      - name: Show Tauri version
-        working-directory: tauri
-        run: bun run tauri --version
+  - name: Copy Linux server into Tauri
+    run: |
+      PLATFORM=$(rustc --print host-tuple)
 
-      - name: Build Tauri AppImage
-        working-directory: tauri
-        run: bun run tauri build
+      mkdir -p tauri/src-tauri/binaries
 
-      - name: Show generated bundles
-        run: |
-          echo "=== Generated bundles ==="
-          find tauri/src-tauri/target/release/bundle \
-            -type f \
-            -print
+      cp backend/dist/voicebox-server/voicebox-server \
+        tauri/src-tauri/binaries/voicebox-server-${PLATFORM}
 
-      - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v4
-        with:
-          name: voicebox-linux-appimage
-          path: tauri/src-tauri/target/release/bundle/appimage/*.AppImage
-          if-no-files-found: error
-          retention-days: 7
+      chmod +x \
+        tauri/src-tauri/binaries/voicebox-server-${PLATFORM}
+
+      echo "=== Tauri binaries ==="
+      ls -lh tauri/src-tauri/binaries/
+
+  - name: Setup Bun
+    uses: oven-sh/setup-bun@v2
+
+  - name: Install Rust stable
+    uses: dtolnay/rust-toolchain@stable
+
+  - name: Install dependencies
+    run: bun install
+
+  - name: Show Bun version
+    run: bun --version
+
+  - name: Show Tauri version
+    working-directory: tauri
+    run: bun run tauri --version
+
+  - name: Build Tauri AppImage
+    working-directory: tauri
+    run: bun run tauri build
+
+  - name: Show generated bundles
+    run: |
+      echo "=== Generated bundles ==="
+      find tauri/src-tauri/target/release/bundle \
+        -type f \
+        -print
+
+  - name: Upload Linux AppImage
+    uses: actions/upload-artifact@v4
+    with:
+      name: voicebox-linux-appimage
+      path: tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+      if-no-files-found: error
+      retention-days: 7
+```
