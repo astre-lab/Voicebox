@@ -15,8 +15,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: tauri/package-lock.json
 
       - name: Install Linux dependencies
         run: |
@@ -38,23 +36,20 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: tauri
-        run: npm ci
+        run: npm install
 
       - name: Build Tauri AppImage
         working-directory: tauri
         run: npm run tauri build
 
-      - name: Find AppImage
+      - name: Show generated bundles
         run: |
-          find tauri/src-tauri/target/release/bundle -type f \
-            \( -name "*.AppImage" -o -name "*.AppImage.tar.gz" \) \
-            -print
+          find tauri/src-tauri/target/release/bundle -type f -print
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: voicebox-linux-appimage
-          path: |
-            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: tauri/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
