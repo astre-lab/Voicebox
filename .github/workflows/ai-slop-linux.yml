@@ -1,191 +1,131 @@
-name: Build Linux
+
+name: Build Voicebox GUI Docker Image
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 jobs:
-  # ============================================================
-  # JOB 1: Standard Linux AppImage (CPU-only, matches Release.yml)
-  # ============================================================
-  build-linux-appimage:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+  build:
+    name: Build GUI Docker image
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Free up disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: true
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            llvm-dev \
-            libasound2-dev
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install CPU-only PyTorch
-        run: |
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r backend/requirements.txt
-          pip install --no-deps chatterbox-tts
-          pip install --no-deps hume-tada
-
-      - name: Build Python server
-        run: |
-          chmod +x scripts/build-server.sh
-          ./scripts/build-server.sh
+      - name: Checkout Voicebox
+        uses: actions/checkout@v4
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./tauri/src-tauri -> target"
-
-      - name: Install JS dependencies
-        run: bun install
-
-      - name: Build Tauri app
-        timeout-minutes: 30
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          CARGO_TERM_VERBOSE: "true"
-          RUST_BACKTRACE: "1"
+      # Voicebox normally expects its local backend on 17493.
+      # This build intentionally changes that default to 8000.
+      - name: Configure backend port 8000
         run: |
-          cd tauri
-          bun run tauri build
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Upload AppImage and .deb
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
-            tauri/src-tauri/target/release/bundle/deb/*.deb
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path = Path("app/src/stores/serverStore.ts")
+          text = path.read_text()
 
-      - name: Upload as workflow artifact
+          old = "const fallback = 'http://127.0.0.1:17493';"
+          new = "const fallback = 'http://127.0.0.1:8000';"
+
+          if old not in text:
+              raise SystemExit(
+                  "Could not find the expected default backend URL. "
+                  "The Voicebox source may have changed."
+              )
+
+          text = text.replace(old, new)
+
+          old_port = "parsed.port === '17493'"
+          new_port = "parsed.port === '8000'"
+
+          if old_port not in text:
+              raise SystemExit(
+                  "Could not find the expected loopback port check."
+              )
+
+          text = text.replace(old_port, new_port)
+
+          path.write_text(text)
+          PY
+
+          echo "=== Modified serverStore.ts ==="
+          grep -n "8000\|17493" app/src/stores/serverStore.ts
+
+      - name: Build web GUI
+        working-directory: app
+        run: bun run build
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile.gui <<'EOF'
+          FROM nginx:alpine
+
+          COPY app/dist/ /usr/share/nginx/html/
+
+          RUN cat > /etc/nginx/conf.d/default.conf <<'NGINX'
+          server {
+              listen 8080;
+              server_name _;
+
+              root /usr/share/nginx/html;
+              index index.html;
+
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+          }
+          NGINX
+
+          EXPOSE 8080
+          EOF
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag voicebox-gui:port8000 \
+            --file Dockerfile.gui \
+            .
+
+      - name: Test Docker image
+        run: |
+          docker run \
+            --detach \
+            --name voicebox-gui-test \
+            --publish 8080:8080 \
+            voicebox-gui:port8000
+
+          sleep 3
+
+          curl --fail http://127.0.0.1:8080/
+
+          docker stop voicebox-gui-test
+          docker rm voicebox-gui-test
+
+      - name: Export single Docker image
+        run: |
+          docker save voicebox-gui:port8000 \
+            | gzip -1 \
+            > voicebox-gui-port8000.tar.gz
+
+          sha256sum voicebox-gui-port8000.tar.gz \
+            > voicebox-gui-port8000.tar.gz.sha256
+
+          ls -lh \
+            voicebox-gui-port8000.tar.gz \
+            voicebox-gui-port8000.tar.gz.sha256
+
+      - name: Upload Docker image
         uses: actions/upload-artifact@v4
         with:
-          name: voicebox-linux-appimage
+          name: voicebox-gui-port8000
           path: |
-            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
-            tauri/src-tauri/target/release/bundle/deb/*.deb
+            voicebox-gui-port8000.tar.gz
+            voicebox-gui-port8000.tar.gz.sha256
+          if-no-files-found: error
           retention-days: 7
 
-  # ============================================================
-  # JOB 2: Linux CUDA Backend (for manual deployment)
-  # Mirrors build-cuda-windows but publishes separately.
-  # Users deploy this manually; it is NOT auto-downloaded.
-  # ============================================================
-  build-cuda-linux:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Free up disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: true
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r backend/requirements.txt
-          pip install --no-deps chatterbox-tts
-          pip install --no-deps hume-tada
-
-      - name: Install PyTorch with CUDA 12.8
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
-          pip install torchaudio --index-url https://download.pytorch.org/whl/cu128 --force-reinstall --no-deps
-
-      - name: Verify CUDA support in torch
-        run: |
-          python -c "import torch; print(f'CUDA available in build: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')"
-
-      - name: Build CUDA server binary (onedir)
-        shell: bash
-        working-directory: backend
-        env:
-          TORCH_CUDA_ARCH_LIST: "8.0;8.6;8.9;9.0;12.0+PTX"
-        run: python build_binary.py --cuda
-
-      - name: Package into server core + CUDA libs archives
-        shell: bash
-        run: |
-          python scripts/package_cuda.py \
-            backend/dist/voicebox-server-cuda/ \
-            --output release-assets/ \
-            --cuda-libs-version cu128-linux-v1 \
-            --torch-compat ">=2.7.0,<2.11.0"
-
-      - name: Upload CUDA archives to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release-assets/voicebox-server-cuda.tar.gz
-            release-assets/voicebox-server-cuda.tar.gz.sha256
-            release-assets/cuda-libs-cu128-linux-v1.tar.gz
-            release-assets/cuda-libs-cu128-linux-v1.tar.gz.sha256
-            release-assets/cuda-libs.json
-          draft: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload onedir as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: voicebox-server-cuda-linux
-          path: backend/dist/voicebox-server-cuda/
-          retention-days: 7
