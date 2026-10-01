@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Voicebox
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Bun
@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Configure web GUI for backend on port 8000
+      - name: Configure backend URL
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -34,6 +34,7 @@ jobs:
             if (!import.meta.env.PROD || typeof window === 'undefined') {
               return fallback;
             }
+
             const { protocol, origin, hostname } = window.location;
             if (
               (protocol === 'http:' || protocol === 'https:') &&
@@ -46,21 +47,37 @@ jobs:
             return fallback;
           }"""
 
+          if old not in text:
+              print("Current getDefaultServerUrl():")
+              start = text.index("export function getDefaultServerUrl")
+              end = text.index(
+                  "export function isLoopbackVoiceboxServerUrl",
+                  start,
+              )
+              print(text[start:end])
+              raise SystemExit(
+                  "Expected source block was not found. "
+                  "No files were modified."
+              )
+
           new = """export function getDefaultServerUrl(): string {
             return 'http://127.0.0.1:8000';
-          }"""
+          }
 
-          if old not in text:
-              raise SystemExit(
-                  "Expected getDefaultServerUrl() implementation was not found; "
-                  "refusing to modify the repository."
-              )
+          """
 
           path.write_text(text.replace(old, new))
           PY
 
+      - name: Verify backend URL
+        run: |
+          grep -n -A5 -B2 'getDefaultServerUrl' \
+            app/src/stores/serverStore.ts
+
       - name: Build web frontend
-        run: bun run build:web
+        run: |
+          cd web
+          bunx --bun vite build
 
       - name: Create Dockerfile
         run: |
@@ -69,7 +86,7 @@ jobs:
 
           COPY web/dist/ /usr/share/nginx/html/
 
-          EXPOSE 8080
+          EXPOSE 80
 
           CMD ["nginx", "-g", "daemon off;"]
           EOF
@@ -92,21 +109,22 @@ jobs:
 
           for i in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:8080/ >/dev/null; then
-              echo "GUI is responding."
+              echo "Voicebox GUI is responding."
               exit 0
             fi
             sleep 1
           done
 
-          echo "GUI failed to respond."
+          echo "Voicebox GUI did not respond."
           docker logs voicebox-gui-test
           exit 1
 
-      - name: Export single Docker image file
+      - name: Export Docker image
         run: |
-          docker save voicebox-gui:port8000 | gzip -1 > voicebox-gui-port8000.tar.gz
+          docker save voicebox-gui:port8000 | gzip -1 \
+            > voicebox-gui-port8000.tar.gz
 
-      - name: Upload single Docker image file
+      - name: Upload single image file
         uses: actions/upload-artifact@v4
         with:
           name: voicebox-gui-port8000
