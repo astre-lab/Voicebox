@@ -1,8 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   Captions,
   Check,
@@ -59,7 +56,6 @@ import {
 import { useToast } from '@/components/ui/use-toast';
 import { apiClient } from '@/lib/api/client';
 import type {
-  CaptureListResponse,
   CaptureResponse,
   CaptureSource,
   VoiceProfileResponse,
@@ -67,6 +63,7 @@ import type {
 import type { LanguageCode } from '@/lib/constants/languages';
 import { BOTTOM_SAFE_AREA_PADDING } from '@/lib/constants/ui';
 import { useCaptureRecordingSession } from '@/lib/hooks/useCaptureRecordingSession';
+import { usePlatform } from '@/platform/PlatformContext';
 import { useDictationReadiness } from '@/lib/hooks/useDictationReadiness';
 import { useCaptureSettings } from '@/lib/hooks/useSettings';
 import { cn } from '@/lib/utils/cn';
@@ -94,11 +91,11 @@ function ChordKeys({ keys }: { keys: string[] }) {
         return (
           <span
             key={k}
-            className="relative inline-flex items-center justify-center h-6 min-w-[1.5rem] px-1.5 rounded-md border border-border bg-muted/60 font-mono text-[11px] font-medium shadow-sm text-foreground"
+            className="relative inline-flex items-center justify-center h-6 min-w-6 px-1.5 rounded-md border border-border bg-muted/60 font-mono text-[11px] font-medium shadow-sm text-foreground"
           >
             {displayLabelForKey(k)}
             {side ? (
-              <span className="absolute -top-1 -right-1 h-3 min-w-[0.75rem] px-0.5 rounded-sm bg-accent text-[7px] font-bold leading-none flex items-center justify-center text-accent-foreground">
+              <span className="absolute -top-1 -right-1 h-3 min-w-3 px-0.5 rounded-sm bg-accent text-[7px] font-bold leading-none flex items-center justify-center text-accent-foreground">
                 {side}
               </span>
             ) : null}
@@ -132,6 +129,9 @@ function SourceBadge({ source }: { source: CaptureSource }) {
 type PlaybackState = 'idle' | 'generating' | 'playing';
 
 export function CapturesTab() {
+
+  const { filesystem } = usePlatform();
+
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -201,31 +201,6 @@ export function CapturesTab() {
   // seed, the selection-guard effect would snap back to ``captures[0]`` in
   // the race window between ``setSelectedId(new)`` and the refetched list
   // actually containing the new row.
-  useEffect(() => {
-    const unlistens: Promise<UnlistenFn>[] = [];
-    unlistens.push(
-      listen<{ capture: CaptureResponse }>('capture:created', (event) => {
-        const capture = event.payload?.capture;
-        if (capture) {
-          queryClient.setQueryData<CaptureListResponse>(['captures'], (prev) => {
-            if (!prev) return prev;
-            if (prev.items.some((c) => c.id === capture.id)) return prev;
-            return { ...prev, items: [capture, ...prev.items], total: prev.total + 1 };
-          });
-          setSelectedId(capture.id);
-        }
-        queryClient.invalidateQueries({ queryKey: ['captures'] });
-      }),
-    );
-    unlistens.push(
-      listen('capture:updated', () => {
-        queryClient.invalidateQueries({ queryKey: ['captures'] });
-      }),
-    );
-    return () => {
-      for (const p of unlistens) p.then((fn) => fn()).catch(() => {});
-    };
-  }, [queryClient]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -333,24 +308,25 @@ export function CapturesTab() {
     });
   };
 
-  const handleExportAudio = async () => {
-    if (!selected) return;
-    try {
-      const dest = await save({
-        defaultPath: `capture_${selected.id.slice(0, 8)}.wav`,
-        filters: [{ name: 'Audio', extensions: ['wav'] }],
-      });
-      if (!dest) return;
-      const res = await fetch(apiClient.getCaptureAudioUrl(selected.id));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = new Uint8Array(await res.arrayBuffer());
-      await writeFile(dest, buf);
-      exportToastSuccess(dest);
-    } catch (err) {
-      exportToastError(err);
-    }
-  };
+const handleExportAudio = async () => {
+  if (!selected) return;
+  try {
+    const res = await fetch(apiClient.getCaptureAudioUrl(selected.id));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = new Uint8Array(await res.arrayBuffer());
 
+    const filename = `capture_${selected.id.slice(0, 8)}.wav`;
+    await filesystem.saveFile(
+      filename,
+      new Blob([buf], { type: 'audio/wav' }),
+      [{ name: 'Audio', extensions: ['wav'] }],
+    );
+
+    exportToastSuccess(filename);
+  } catch (err) {
+    exportToastError(err);
+  }
+};
   const handleExportTranscript = async () => {
     if (!selected) return;
     const text = (selected.transcript_refined || selected.transcript_raw || '').trim();
@@ -359,13 +335,13 @@ export function CapturesTab() {
       return;
     }
     try {
-      const dest = await save({
-        defaultPath: `capture_${selected.id.slice(0, 8)}.txt`,
-        filters: [{ name: 'Text', extensions: ['txt'] }],
-      });
-      if (!dest) return;
-      await writeTextFile(dest, text);
-      exportToastSuccess(dest);
+      const filename = `capture_${selected.id.slice(0, 8)}.txt`;
+      await filesystem.saveFile(
+        filename,
+        new Blob([text], { type: 'text/plain;charset=utf-8' }),
+        [{ name: 'Text', extensions: ['txt'] }],
+      );
+      exportToastSuccess(filename);
     } catch (err) {
       exportToastError(err);
     }
@@ -390,21 +366,36 @@ export function CapturesTab() {
     return lines.join('\n');
   };
 
-  const handleExportMarkdown = async () => {
+   const handleExportMarkdown = async () => {
     if (!selected) return;
-    const hasContent = (selected.transcript_refined || selected.transcript_raw || '').trim();
+
+    const hasContent = (
+      selected.transcript_refined ||
+      selected.transcript_raw ||
+      ''
+    ).trim();
+
     if (!hasContent) {
-      toast({ title: t('captures.toast.exportEmpty'), variant: 'destructive' });
+      toast({
+        title: t('captures.toast.exportEmpty'),
+        variant: 'destructive',
+      });
       return;
     }
+
     try {
-      const dest = await save({
-        defaultPath: `capture_${selected.id.slice(0, 8)}.md`,
-        filters: [{ name: 'Markdown', extensions: ['md'] }],
-      });
-      if (!dest) return;
-      await writeTextFile(dest, buildCaptureMarkdown(selected));
-      exportToastSuccess(dest);
+      const filename = `capture_${selected.id.slice(0, 8)}.md`;
+      const markdown = buildCaptureMarkdown(selected);
+
+      await filesystem.saveFile(
+        filename,
+        new Blob([markdown], {
+          type: 'text/markdown;charset=utf-8',
+        }),
+        [{ name: 'Markdown', extensions: ['md'] }],
+      );
+
+      exportToastSuccess(filename);
     } catch (err) {
       exportToastError(err);
     }
@@ -451,7 +442,7 @@ export function CapturesTab() {
       />
 
       {/* Left: capture list */}
-      <div className="w-[340px] shrink-0">
+      <div className="w-85 shrink-0">
         <ListPane>
           <ListPaneHeader>
             <ListPaneTitleRow>
@@ -535,7 +526,7 @@ export function CapturesTab() {
 
       {/* Right: capture detail */}
       <div className="flex-1 flex flex-col relative overflow-hidden min-w-0">
-        <div className="absolute top-0 left-0 right-0 h-20 bg-gradient-to-b from-background to-transparent z-10 pointer-events-none" />
+        <div className="absolute top-0 left-0 right-0 h-20 bg-linear-to-b from-background to-transparent z-10 pointer-events-none" />
 
         {/* Top action bar */}
         <div className="absolute top-0 left-0 right-0 z-20 px-8">
@@ -688,7 +679,7 @@ export function CapturesTab() {
                     : selected.transcript_raw
                 }
                 readOnly
-                className="text-[15px] leading-relaxed min-h-[260px] border-0 bg-transparent resize-none focus-visible:ring-0 focus-visible:ring-offset-0 p-6"
+                className="text-[15px] leading-relaxed min-h-65 border-0 bg-transparent resize-none focus-visible:ring-0 focus-visible:ring-offset-0 p-6"
               />
             </div>
 

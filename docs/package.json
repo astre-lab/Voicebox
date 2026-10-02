@@ -1,5 +1,5 @@
 {
-  "name": "example-next-mdx",
+  "name": "Voice box documentation",
   "version": "0.0.0",
   "private": true,
   "scripts": {
@@ -13,7 +13,7 @@
     "class-variance-authority": "^0.7.1",
     "fumadocs-core": "^16.4.11",
     "fumadocs-mdx": "13",
-    "fumadocs-openapi": "^10.2.7",
+    "fumadocs-openapi": "^12.1.0",
     "fumadocs-ui": "^16.4.11",
     "lucide-react": "^0.546.0",
     "next": "^16.1.6",

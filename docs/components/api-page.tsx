@@ -1,7 +1,26 @@
-import { openapi } from '@/lib/openapi';
-import { createAPIPage } from 'fumadocs-openapi/ui';
 import client from './api-page.client';
+import { openapi } from '@/lib/openapi';
+import type { OpenAPIPageProps } from 'fumadocs-openapi/ui';
 
-export const APIPage = createAPIPage(openapi, {
-  client,
-});
+export async function APIPage(props: OpenAPIPageProps) {
+  const { document, operations, webhooks, showTitle, showDescription } = props;
+
+  if ('payload' in props) {
+    return <client {...props} />;
+  }
+
+  const schema = await openapi.getSchema(document);
+
+  return (
+    <client
+      document={document}
+      operations={operations}
+      webhooks={webhooks}
+      showTitle={showTitle}
+      showDescription={showDescription}
+      payload={{
+        bundled: schema.bundled,
+      }}
+    />
+  );
+}
